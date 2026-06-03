@@ -30,7 +30,10 @@ class Command(BaseCommand):
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
         async def _run():
+            from trading.csv_refresh import csv_refresh_loop
+            refresh_interval = getattr(cfg, "scan_interval_s", 3600)
             tasks = [asyncio.create_task(auto_trader_loop(a)) for a in assets]
+            tasks.append(asyncio.create_task(csv_refresh_loop(interval_seconds=refresh_interval)))
             await asyncio.gather(*tasks)
 
         try:

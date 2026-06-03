@@ -114,6 +114,7 @@ docker compose logs -f web      # Django / gunicorn
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
+Or source .venv/bin/activate
 pip install -r requirements.txt
 
 # Requires a local PostgreSQL and Redis, or set DATABASE_URL to sqlite:///db.sqlite3

@@ -43,6 +43,11 @@ def _cfg():
     return TradingConfig.load()
 
 
+async def _acfg():
+    """Async-safe wrapper — always use this from async functions."""
+    return await asyncio.to_thread(_cfg)
+
+
 # ---------------------------------------------------------------------------
 # Gamma API helpers
 # ---------------------------------------------------------------------------
@@ -125,19 +130,12 @@ def _question_matches_asset(question: str, asset: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Signal source — reads from the CSV signals module (same as original)
+# Signal source — reads from the local csv_signals module
 # ---------------------------------------------------------------------------
 
 def _get_signals() -> list[dict]:
-    try:
-        import sys, os
-        # Allow importing csv_signals from the original project if on sys.path,
-        # or replace with your own signal source.
-        from csv_signals import get_latest_signals
-        return get_latest_signals()
-    except ImportError:
-        logger.warning("csv_signals not available — no signals this cycle")
-        return []
+    from trading.csv_signals import get_latest_signals
+    return get_latest_signals()
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +148,7 @@ async def _scan_and_trade(st: AssetState) -> bool:
         fetch_open_orders as pm_fetch_open_orders,
         fetch_positions as pm_fetch_positions,
     )
-    cfg = _cfg()
+    cfg = await _acfg()
 
     # Guard 1: existing filled position → switch to MONITORING
     try:
@@ -315,7 +313,7 @@ async def _scan_and_trade(st: AssetState) -> bool:
 # Signal-based exit predicates (spec v1.1 + early-collapse rule 2026-05-25)
 # ---------------------------------------------------------------------------
 
-def _check_signal_exit(st: AssetState, current_pm_price: float) -> Optional[str]:
+def _check_signal_exit(st: AssetState, current_pm_price: float, cfg) -> Optional[str]:
     """
     Apply spec v1.1 exit rules from algorithms_2026-05-28.py / evaluate_exit().
     Returns an exit reason string if a rule fires, or None to HOLD.
@@ -333,7 +331,6 @@ def _check_signal_exit(st: AssetState, current_pm_price: float) -> Optional[str]
     if st.active_outcome not in ("YES", "NO") or not st.active_market_id:
         return None
 
-    cfg = _cfg()
     signals = _get_signals()
     match = next(
         (s for s in signals if s.get("polymarket_market_id") == st.active_market_id),
@@ -393,7 +390,7 @@ async def _monitor_position(st: AssetState) -> None:
         create_order as pm_create_order,
         cancel_order as pm_cancel_order,
     )
-    cfg = _cfg()
+    cfg = await _acfg()
 
     try:
         positions = await asyncio.to_thread(pm_fetch_positions, True)
@@ -499,7 +496,7 @@ async def _monitor_position(st: AssetState) -> None:
     # ── Signal-based exit (spec v1.1 + early-collapse rule 2026-05-25) ──────
     # Replaces the P&L stop-loss for the primary position. Exits when Deribit
     # conviction is gone, the edge has flipped, or early-collapse rule fires.
-    _exit_reason = _check_signal_exit(st, cur)
+    _exit_reason = _check_signal_exit(st, cur, cfg)
     if _exit_reason:
         sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
         logger.warning(
@@ -675,7 +672,7 @@ async def auto_trader_loop(asset: str) -> None:
 
     _paused_logged = False
     while True:
-        cfg = _cfg()
+        cfg = await _acfg()
         if not cfg.trading_enabled:
             if not _paused_logged:
                 logger.info("%s trading_enabled=False — loop paused", st.tag)
@@ -695,5 +692,5 @@ async def auto_trader_loop(asset: str) -> None:
         except Exception as exc:
             logger.exception("%s unexpected error: %s", st.tag, exc)
 
-        interval = _cfg().scan_interval_s
+        interval = (await _acfg()).scan_interval_s
         await asyncio.sleep(interval)
