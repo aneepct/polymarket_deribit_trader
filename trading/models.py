@@ -57,8 +57,8 @@ class TradingConfig(SingletonModel):
         help_text="Close position when P&L % reaches this value",
     )
     stop_loss_pct = models.FloatField(
-        default=-20.0,
-        help_text="Close position when P&L % drops to this value (negative)",
+        default=-50.0,
+        help_text="Close extra positions when P&L % drops to this value (negative). Primary position uses signal-based exit.",
     )
     scan_interval_s = models.IntegerField(
         default=60,
@@ -75,6 +75,20 @@ class TradingConfig(SingletonModel):
     today_lookahead_hours = models.FloatField(
         default=6.0,
         help_text="Hours added to now() when checking if a market resolves 'today'",
+    )
+
+    # ── Signal-based exit rules (spec v1.1 + early-collapse 2026-05-25) ─────
+    min_fair_prob = models.FloatField(
+        default=0.51,
+        help_text="Exit primary position if Deribit fair probability for the held side drops below this value (e.g. 0.51 = 51%)",
+    )
+    early_collapse_window_s = models.IntegerField(
+        default=600,
+        help_text="Seconds after fill during which the early-collapse rule is active (default 600 = 10 min)",
+    )
+    early_collapse_edge_threshold = models.FloatField(
+        default=0.01,
+        help_text="Exit if |edge| drops below this fraction within the early-collapse window (e.g. 0.01 = 1pp)",
     )
 
     # ── API endpoints ────────────────────────────────────────────────────────

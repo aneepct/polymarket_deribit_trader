@@ -112,6 +112,31 @@ class AssetState:
     def extra_token_ids(self, v: list):
         self._set(extra_token_ids=v)
 
+    @property
+    def active_market_id(self) -> Optional[str]:
+        return self._get("active_market_id")
+
+    @active_market_id.setter
+    def active_market_id(self, v: Optional[str]):
+        self._set(active_market_id=v)
+
+    @property
+    def entry_edge(self) -> Optional[float]:
+        return self._get("entry_edge")
+
+    @entry_edge.setter
+    def entry_edge(self, v: Optional[float]):
+        self._set(entry_edge=v)
+
+    @property
+    def fill_time(self) -> Optional[str]:
+        """ISO UTC datetime string set when BUY fill is first confirmed."""
+        return self._get("fill_time")
+
+    @fill_time.setter
+    def fill_time(self, v: Optional[str]):
+        self._set(fill_time=v)
+
     # ── Mutations (atomic-ish via full hash replace) ─────────────────────────
 
     def reset(self) -> None:
@@ -123,6 +148,9 @@ class AssetState:
             "active_sell_order_id": None,
             "market_end_date": None,
             "extra_token_ids": [],
+            "active_market_id": None,
+            "entry_edge": None,
+            "fill_time": None,
         }, timeout=_ttl())
 
     def close_and_promote(self) -> None:
@@ -136,6 +164,9 @@ class AssetState:
                 "active_sell_order_id": None,
                 "market_end_date": self.market_end_date,
                 "extra_token_ids": extras[1:],
+                "active_market_id": None,
+                "entry_edge": None,
+                "fill_time": None,
             }, timeout=_ttl())
         else:
             self.reset()

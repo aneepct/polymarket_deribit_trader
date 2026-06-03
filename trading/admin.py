@@ -10,12 +10,17 @@ class TradingConfigAdmin(admin.ModelAdmin):
         }),
         ("Profit / Loss", {
             "fields": ("profit_target_pct", "stop_loss_pct"),
+            "description": "stop_loss_pct applies to extra positions only; primary position uses signal-based exit rules below.",
         }),
         ("Timing", {
             "fields": ("scan_interval_s", "today_lookahead_hours"),
         }),
         ("Deribit Signal", {
             "fields": ("deribit_neutral_low", "deribit_neutral_high"),
+        }),
+        ("Exit Rules (spec v1.1)", {
+            "fields": ("min_fair_prob", "early_collapse_window_s", "early_collapse_edge_threshold"),
+            "description": "Signal-based exit rules for the primary position. Exit when Deribit conviction is gone, edge flips, or early-collapse fires.",
         }),
         ("Assets", {
             "fields": ("assets",),
