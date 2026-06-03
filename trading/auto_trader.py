@@ -673,7 +673,17 @@ async def auto_trader_loop(asset: str) -> None:
     except Exception as exc:
         logger.exception("%s _resume_if_position_open failed: %s", st.tag, exc)
 
+    _paused_logged = False
     while True:
+        cfg = _cfg()
+        if not cfg.trading_enabled:
+            if not _paused_logged:
+                logger.info("%s trading_enabled=False — loop paused", st.tag)
+                _paused_logged = True
+            await asyncio.sleep(cfg.scan_interval_s)
+            continue
+        _paused_logged = False
+
         try:
             if st.state == "SCANNING":
                 await _scan_and_trade(st)

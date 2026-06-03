@@ -40,8 +40,15 @@ class SingletonModel(models.Model):
 class TradingConfig(SingletonModel):
     """
     All tuning constants for the auto-trader.
-    Edit via Django admin → a restart of the trading loop picks up new values.
+    Edit via Django admin — changes take effect on the next cycle (no restart).
+    Set trading_enabled=False to pause the loop without stopping the process.
     """
+
+    # ── Scheduler control ───────────────────────────────────────────────────
+    trading_enabled = models.BooleanField(
+        default=True,
+        help_text="Uncheck to pause the trading loop. Re-check to resume. Takes effect within one cycle.",
+    )
 
     # ── Auto-trader constants ────────────────────────────────────────────────
     order_usd = models.FloatField(

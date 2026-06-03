@@ -5,6 +5,10 @@ from .models import TradingConfig, PolymarketCredentials
 @admin.register(TradingConfig)
 class TradingConfigAdmin(admin.ModelAdmin):
     fieldsets = (
+        ("Scheduler", {
+            "fields": ("trading_enabled",),
+            "description": "Toggle to pause/resume the trading loop without restarting the process. Takes effect within one scan cycle.",
+        }),
         ("Order Sizing", {
             "fields": ("order_usd", "min_shares"),
         }),
