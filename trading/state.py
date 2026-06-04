@@ -139,6 +139,36 @@ class AssetState:
 
     # ── Mutations (atomic-ish via full hash replace) ─────────────────────────
 
+    @property
+    def blocked_markets(self) -> dict:
+        """Dict of {market_id: unblock_epoch_float} — markets under re-entry cooldown."""
+        return self._get("blocked_markets", {})
+
+    @blocked_markets.setter
+    def blocked_markets(self, v: dict):
+        self._set(blocked_markets=v)
+
+    def block_market(self, market_id: str, cooldown_minutes: int = 90) -> None:
+        """Block re-entry on market_id for cooldown_minutes after a close."""
+        import time
+        blocked = self.blocked_markets
+        blocked[market_id] = time.time() + cooldown_minutes * 60
+        self.blocked_markets = blocked
+
+    def is_market_blocked(self, market_id: str) -> bool:
+        """Return True if market_id is still within its re-entry cooldown window."""
+        import time
+        blocked = self.blocked_markets
+        unblock_at = blocked.get(market_id)
+        if unblock_at is None:
+            return False
+        if time.time() < unblock_at:
+            return True
+        # Expired — clean it up
+        del blocked[market_id]
+        self.blocked_markets = blocked
+        return False
+
     def reset(self) -> None:
         cache.set(_key(self.asset), {
             "state": "SCANNING",
@@ -151,6 +181,7 @@ class AssetState:
             "active_market_id": None,
             "entry_edge": None,
             "fill_time": None,
+            "blocked_markets": {},
         }, timeout=_ttl())
 
     def close_and_promote(self) -> None:

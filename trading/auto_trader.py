@@ -219,14 +219,16 @@ async def _scan_and_trade(st: AssetState) -> bool:
         if s.get("has_alpha")
         and (s.get("currency") or "").upper() == st.asset
         and _resolves_today(s)
+        and not st.is_market_blocked(s.get("polymarket_market_id") or "")
     ]
     if not alpha:
         asset_signals = [s for s in signals if (s.get("currency") or "").upper() == st.asset]
         today_signals = [s for s in asset_signals if _resolves_today(s)]
         alpha_signals = [s for s in today_signals if s.get("has_alpha")]
+        blocked_count = sum(1 for s in alpha_signals if st.is_market_blocked(s.get("polymarket_market_id") or ""))
         logger.info(
-            "%s no alpha signals resolving today (%s) — total=%d asset=%d today=%d has_alpha=%d",
-            st.tag, today_utc, len(signals), len(asset_signals), len(today_signals), len(alpha_signals),
+            "%s no alpha signals resolving today (%s) — total=%d asset=%d today=%d has_alpha=%d blocked=%d",
+            st.tag, today_utc, len(signals), len(asset_signals), len(today_signals), len(alpha_signals), blocked_count,
         )
         return False
 
@@ -505,6 +507,9 @@ async def _monitor_position(st: AssetState) -> None:
                     return
                 logger.info("%s expiry close placed id=%s", st.tag, resp.get("orderID"))
                 st.active_sell_order_id = resp.get("orderID")
+                if st.active_market_id:
+                    st.block_market(st.active_market_id)
+                    logger.info("%s market %s blocked for re-entry (90 min cooldown)", st.tag, st.active_market_id)
                 return
         except Exception:
             pass
@@ -529,6 +534,9 @@ async def _monitor_position(st: AssetState) -> None:
             return
         logger.info("%s signal-exit order placed id=%s — waiting for fill", st.tag, resp.get("orderID"))
         st.active_sell_order_id = resp.get("orderID")
+        if st.active_market_id:
+            st.block_market(st.active_market_id)
+            logger.info("%s market %s blocked for re-entry (90 min cooldown)", st.tag, st.active_market_id)
         return
 
     # ── Extra positions ──────────────────────────────────────────────────────
@@ -610,6 +618,9 @@ async def _monitor_position(st: AssetState) -> None:
             return
         logger.info("%s stop-loss close placed id=%s", st.tag, resp.get("orderID"))
         st.active_sell_order_id = resp.get("orderID")
+        if st.active_market_id:
+            st.block_market(st.active_market_id)
+            logger.info("%s market %s blocked for re-entry (90 min cooldown)", st.tag, st.active_market_id)
         return
 
     # ── Profit target ────────────────────────────────────────────────────────
@@ -631,6 +642,9 @@ async def _monitor_position(st: AssetState) -> None:
 
     logger.info("%s close placed id=%s — waiting for fill", st.tag, resp.get("orderID"))
     st.active_sell_order_id = resp.get("orderID")
+    if st.active_market_id:
+        st.block_market(st.active_market_id)
+        logger.info("%s market %s blocked for re-entry (90 min cooldown)", st.tag, st.active_market_id)
 
 
 # ---------------------------------------------------------------------------
