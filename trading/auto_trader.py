@@ -315,15 +315,15 @@ async def _scan_and_trade(st: AssetState) -> bool:
 
 def _check_signal_exit(st: AssetState, current_pm_price: float, cfg) -> Optional[str]:
     """
-    Apply spec v1.1 exit rules from algorithms_2026-05-28.py / evaluate_exit().
-    Returns an exit reason string if a rule fires, or None to HOLD.
+    Signal-based exit rules. Returns an exit reason string if a rule fires, or None to HOLD.
 
-    Rules (in priority order):
-      1. Signal absent from CSV          → Deribit conviction gone
-      2. Deribit fair for held side      < cfg.min_fair_prob (default 0.51)
-      3. Edge sign flip vs entry_edge recorded at order placement
-      4. Early-collapse: |edge| <= cfg.early_collapse_edge_threshold
-                          within cfg.early_collapse_window_s seconds of fill
+    Active rules:
+      7b. Deribit fair for held side < cfg.min_fair_prob (default 0.51) → conviction gone
+      7c. Edge sign flipped vs entry_edge recorded at order placement
+
+    Disabled rules (too noisy / can mass-exit on data pipeline failures):
+      7a. signal_not_in_csv  — DISABLED: Gamma API timeout returns empty list → false mass-exit
+      7d. early_collapse     — DISABLED: 1pp threshold fires on normal IV noise within 600s of fill
 
     Skips gracefully if active_market_id or active_outcome are unset
     (e.g. positions resumed from startup without full context).
@@ -337,11 +337,13 @@ def _check_signal_exit(st: AssetState, current_pm_price: float, cfg) -> Optional
         None,
     )
     if match is None:
+        # Rule 7a DISABLED — signal absent may mean Gamma API failed, not genuine conviction loss.
+        # Log for visibility but do not exit.
         logger.info(
-            "%s signal for market %s absent from CSV — treating as conviction gone",
+            "%s signal for market %s not in latest signals — holding (7a disabled)",
             st.tag, st.active_market_id,
         )
-        return "signal_not_in_csv"
+        return None
 
     try:
         deribit_prob_yes = float(match.get("deribit_prob") or 0)
@@ -350,7 +352,7 @@ def _check_signal_exit(st: AssetState, current_pm_price: float, cfg) -> Optional
 
     current_fair = deribit_prob_yes if st.active_outcome == "YES" else 1.0 - deribit_prob_yes
 
-    # Rule 1: Deribit conviction below threshold.
+    # Rule 7b: Deribit conviction below threshold.
     if current_fair < cfg.min_fair_prob:
         return f"deribit_fair_{current_fair:.3f}_lt_{cfg.min_fair_prob}"
 
@@ -360,22 +362,23 @@ def _check_signal_exit(st: AssetState, current_pm_price: float, cfg) -> Optional
 
     current_edge = current_fair - current_pm_price
 
-    # Rule 2: edge sign flipped.
+    # Rule 7c: edge sign flipped.
     if (entry_edge > 0 and current_edge < 0) or (entry_edge < 0 and current_edge > 0):
         return f"edge_sign_flip_entry_{entry_edge:.3f}_now_{current_edge:.3f}"
 
-    # Rule 3: early-collapse within window after fill.
-    fill_time_str = st.fill_time
-    if fill_time_str:
-        try:
-            fill_dt = datetime.fromisoformat(fill_time_str)
-            if fill_dt.tzinfo is None:
-                fill_dt = fill_dt.replace(tzinfo=timezone.utc)
-            elapsed_s = (datetime.now(timezone.utc) - fill_dt).total_seconds()
-            if elapsed_s <= cfg.early_collapse_window_s and abs(current_edge) <= cfg.early_collapse_edge_threshold:
-                return f"early_collapse_edge_{abs(current_edge):.3f}_at_{int(elapsed_s)}s"
-        except Exception:
-            pass
+    # Rule 7d: early-collapse DISABLED — 1pp threshold triggers on normal IV noise.
+    # Kept here for reference; re-enable by uncommenting when data pipeline is stable.
+    # fill_time_str = st.fill_time
+    # if fill_time_str:
+    #     try:
+    #         fill_dt = datetime.fromisoformat(fill_time_str)
+    #         if fill_dt.tzinfo is None:
+    #             fill_dt = fill_dt.replace(tzinfo=timezone.utc)
+    #         elapsed_s = (datetime.now(timezone.utc) - fill_dt).total_seconds()
+    #         if elapsed_s <= cfg.early_collapse_window_s and abs(current_edge) <= cfg.early_collapse_edge_threshold:
+    #             return f"early_collapse_edge_{abs(current_edge):.3f}_at_{int(elapsed_s)}s"
+    #     except Exception:
+    #         pass
 
     return None
 

@@ -1,21 +1,29 @@
 """
 Self-contained signal computation module.
 
-Reads CSV files produced by the deribit_orderbook_data and
-polymarket_markets_export scripts, computes BSM-based probability
-estimates, and exposes get_latest_signals() for the trading loop.
+Fetches live Polymarket markets directly from the Gamma API and reads
+real-time Deribit IV from Redis (written by deribit_ws_loop).
+Computes BSM-based probability estimates and exposes get_latest_signals()
+for the trading loop.
 
-No openclaw-specific dependencies (config, engine.scanner, agents, memory_store).
+No openclaw-specific dependencies. No CSV files written or read (except
+Deribit CSV as a one-time fallback on first startup before Redis is warm).
 """
 from __future__ import annotations
 
 import csv
+import json
+import logging
 import math
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
 
 # ── Constants (mirror openclaw/backend/config.py) ─────────────────────────────
 STRIKE_TOLERANCE_PCT = 5.0
@@ -141,6 +149,45 @@ def _load_deribit_csv(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _load_poly_csv(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+async def _load_deribit_from_redis(
+    redis_client: Any, currency: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return (today_rows, tomorrow_rows) parsed from Redis ticker keys."""
+    today = datetime.now(timezone.utc).date()
+    tomorrow = today + timedelta(days=1)
+
+    keys = await redis_client.keys(f"deribit:ticker:{currency}-*")
+    today_rows: list[dict[str, Any]] = []
+    tomorrow_rows: list[dict[str, Any]] = []
+
+    for key in keys:
+        raw = await redis_client.get(key)
+        if not raw:
+            continue
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        expiry_str = (row.get("expiry_str") or "").upper()
+        try:
+            exp_date = datetime.strptime(expiry_str, "%d%b%y").date()
+        except ValueError:
+            continue
+        if exp_date == today:
+            today_rows.append(row)
+        elif exp_date == tomorrow:
+            tomorrow_rows.append(row)
+
+    return today_rows, tomorrow_rows
+
+
 def _find_closest_in_strike(
     candidates: list[dict[str, Any]],
     *,
@@ -175,23 +222,130 @@ def _book_from_der_row(r: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     }
 
 
+# ── Polymarket Gamma API fetch ────────────────────────────────────────────────
+
+_GAMMA_BASE = "https://gamma-api.polymarket.com"
+_CURRENCY_SLUGS = {"BTC": "bitcoin", "ETH": "ethereum"}
+_PUT_KEYWORDS = ["dip", "fall", "drop", "below", "under", "crash", "decline", "sink"]
+
+
+def _parse_maybe_json_list(v: Any) -> list:
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str):
+        try:
+            loaded = json.loads(v)
+            if isinstance(loaded, list):
+                return loaded
+        except json.JSONDecodeError:
+            pass
+    return []
+
+
+def _extract_end_date(market: dict) -> Optional[datetime]:
+    end = market.get("endDate") or market.get("endDateIso")
+    if not end:
+        return None
+    try:
+        return datetime.strptime(str(end)[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _extract_outcome_prices0_scaled(market: dict) -> Optional[float]:
+    prices = _parse_maybe_json_list(market.get("outcomePrices"))
+    if not prices:
+        return None
+    try:
+        return float(prices[0]) * 100
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _extract_liquidity(market: dict) -> float:
+    for key in ("liquidity", "liquidityNum", "volume", "volumeNum"):
+        v = market.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
+def _detect_option_type(question: str) -> str:
+    ql = (question or "").lower()
+    return "P" if any(k in ql for k in _PUT_KEYWORDS) else "C"
+
+
+def _build_daily_slug(currency: str, target_date) -> str:
+    asset = _CURRENCY_SLUGS.get(currency, currency.lower())
+    month = target_date.strftime("%B").lower()
+    return f"{asset}-price-on-{month}-{target_date.day}-{target_date.year}"
+
+
+async def _fetch_polymarket_rows(currency: str) -> list[dict[str, Any]]:
+    """Fetch today+tomorrow Polymarket markets for *currency* from the Gamma API."""
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    tomorrow = today + timedelta(days=1)
+    rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        for scan_date in (today, tomorrow):
+            slug = _build_daily_slug(currency, scan_date)
+            url = f"{_GAMMA_BASE}/events/slug/{slug}"
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+                markets = resp.json().get("markets") or []
+            except Exception as exc:
+                logger.warning("[csv_signals] Polymarket fetch failed (slug=%s): %s", slug, exc)
+                continue
+
+            for market in markets:
+                mid = str(market.get("id") or market.get("conditionId") or "")
+                if not mid or mid in seen_ids:
+                    continue
+                question = market.get("question") or ""
+                end_date = _extract_end_date(market)
+                if not end_date:
+                    continue
+                if poly_resolution_time(end_date) < now:
+                    continue
+                outcome0_scaled = _extract_outcome_prices0_scaled(market)
+                if outcome0_scaled is None:
+                    continue
+                seen_ids.add(mid)
+                rows.append({
+                    "market_id": mid,
+                    "polymarket_question": question,
+                    "currency": currency,
+                    "option_type": _detect_option_type(question),
+                    "target_price_from_question": extract_price_from_question(question),
+                    "end_date_iso": end_date.isoformat(),
+                    "liquidity_usd": _extract_liquidity(market),
+                    "outcomePrices_0_scaled": outcome0_scaled,
+                })
+
+    logger.info("[csv_signals] Polymarket %s: %d markets fetched", currency, len(rows))
+    return rows
+
+
 # ── Core computation ──────────────────────────────────────────────────────────
 
 def _compute_for_currency(
     *,
     currency: str,
-    poly_csv_path: Path,
-    deribit_today_csv_path: Path,
-    deribit_tomorrow_csv_path: Path,
+    poly_rows: list[dict[str, Any]],
+    deribit_today_rows: list[dict[str, Any]],
+    deribit_tomorrow_rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
-    poly_rows: list[dict[str, Any]] = []
-    if poly_csv_path.exists():
-        with poly_csv_path.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            poly_rows = list(reader)
-
-    der_today = _load_deribit_csv(deribit_today_csv_path)
-    der_tomorrow = _load_deribit_csv(deribit_tomorrow_csv_path)
+    der_today = deribit_today_rows
+    der_tomorrow = deribit_tomorrow_rows
 
     if not poly_rows or (not der_today and not der_tomorrow):
         return [], len(poly_rows)
@@ -391,32 +545,63 @@ def _compute_for_currency(
 
 
 async def refresh_latest_signals() -> None:
-    """Recompute signals from the latest CSV files and update the in-memory store."""
-    global _latest_signals
+    """
+    Recompute signals and update the in-memory store.
 
-    # CSV files live alongside this file inside trading/
+    Polymarket data: fetched live from the Gamma API on every call.
+    Deribit data: read from Redis (written in real-time by deribit_ws_loop).
+    Falls back to Deribit CSV files on first startup before Redis is warm.
+    No CSV files are written or required for normal operation.
+    """
+    global _latest_signals
+    import redis.asyncio as aioredis
+
+    # ── Polymarket rows from Gamma API ────────────────────────────────────────
+    btc_poly_rows = await _fetch_polymarket_rows("BTC")
+    eth_poly_rows = await _fetch_polymarket_rows("ETH")
+
+    # ── Deribit rows from Redis ────────────────────────────────────────────────
+    from django.conf import settings
+    redis_url = getattr(settings, "REDIS_URL", "redis://localhost:6379/0")
+    r = aioredis.from_url(redis_url, decode_responses=True)
+    try:
+        btc_today, btc_tomorrow = await _load_deribit_from_redis(r, "BTC")
+        eth_today, eth_tomorrow = await _load_deribit_from_redis(r, "ETH")
+    finally:
+        await r.aclose()
+
+    # ── Deribit CSV fallback (first startup before WS has warmed Redis) ───────
     base = Path(__file__).resolve().parent
     depth = DERIBIT_DEPTH
+    if not btc_today and not btc_tomorrow:
+        logger.info("[csv_signals] No BTC data in Redis — falling back to CSV")
+        btc_today = _load_deribit_csv(
+            base / "deribit_orderbook_data" / "output" / "BTC" / f"order_book_today_depth{depth}.csv"
+        )
+        btc_tomorrow = _load_deribit_csv(
+            base / "deribit_orderbook_data" / "output" / "BTC" / f"order_book_tomorrow_depth{depth}.csv"
+        )
 
-    btc_poly = base / "polymarket_markets_export" / "output" / "BTC" / "polymarket_markets_today_utc.csv"
-    eth_poly = base / "polymarket_markets_export" / "output" / "ETH" / "polymarket_markets_today_utc.csv"
-
-    btc_t1 = base / "deribit_orderbook_data" / "output" / "BTC" / f"order_book_today_depth{depth}.csv"
-    btc_t2 = base / "deribit_orderbook_data" / "output" / "BTC" / f"order_book_tomorrow_depth{depth}.csv"
-    eth_t1 = base / "deribit_orderbook_data" / "output" / "ETH" / f"order_book_today_depth{depth}.csv"
-    eth_t2 = base / "deribit_orderbook_data" / "output" / "ETH" / f"order_book_tomorrow_depth{depth}.csv"
+    if not eth_today and not eth_tomorrow:
+        logger.info("[csv_signals] No ETH data in Redis — falling back to CSV")
+        eth_today = _load_deribit_csv(
+            base / "deribit_orderbook_data" / "output" / "ETH" / f"order_book_today_depth{depth}.csv"
+        )
+        eth_tomorrow = _load_deribit_csv(
+            base / "deribit_orderbook_data" / "output" / "ETH" / f"order_book_tomorrow_depth{depth}.csv"
+        )
 
     btc_candidates, _ = _compute_for_currency(
         currency="BTC",
-        poly_csv_path=btc_poly,
-        deribit_today_csv_path=btc_t1,
-        deribit_tomorrow_csv_path=btc_t2,
+        poly_rows=btc_poly_rows,
+        deribit_today_rows=btc_today,
+        deribit_tomorrow_rows=btc_tomorrow,
     )
     eth_candidates, _ = _compute_for_currency(
         currency="ETH",
-        poly_csv_path=eth_poly,
-        deribit_today_csv_path=eth_t1,
-        deribit_tomorrow_csv_path=eth_t2,
+        poly_rows=eth_poly_rows,
+        deribit_today_rows=eth_today,
+        deribit_tomorrow_rows=eth_tomorrow,
     )
 
     candidates = btc_candidates + eth_candidates

@@ -31,9 +31,10 @@ class Command(BaseCommand):
 
         async def _run():
             from trading.csv_refresh import csv_refresh_loop
-            refresh_interval = getattr(cfg, "scan_interval_s", 3600)
+            from trading.deribit_ws import deribit_ws_loop
             tasks = [asyncio.create_task(auto_trader_loop(a)) for a in assets]
-            tasks.append(asyncio.create_task(csv_refresh_loop(interval_seconds=refresh_interval)))
+            tasks.append(asyncio.create_task(csv_refresh_loop()))   # 60s default
+            tasks.append(asyncio.create_task(deribit_ws_loop()))
             await asyncio.gather(*tasks)
 
         try:

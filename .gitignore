@@ -54,3 +54,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# ── Generated data outputs (not needed in repo — data comes from live APIs) ──
+trading/deribit_orderbook_data/output/
+trading/polymarket_markets_export/output/
