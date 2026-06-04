@@ -20,7 +20,8 @@ class TradingConfigAdmin(admin.ModelAdmin):
             "fields": ("scan_interval_s", "today_lookahead_hours"),
         }),
         ("Deribit Signal", {
-            "fields": ("deribit_neutral_low", "deribit_neutral_high"),
+            "fields": ("deribit_neutral_low", "deribit_neutral_high", "max_poly_entry_price"),
+            "description": "max_poly_entry_price: skip entry if token price exceeds this (e.g. 0.70 = 70¢). Above this threshold risk/reward is structurally bad.",
         }),
         ("Exit Rules (spec v1.1)", {
             "fields": ("min_fair_prob", "early_collapse_window_s", "early_collapse_edge_threshold"),
