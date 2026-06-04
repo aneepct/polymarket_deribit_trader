@@ -82,7 +82,7 @@ class TradingConfig(SingletonModel):
     max_poly_entry_price = models.FloatField(
         default=0.70,
         help_text=(
-            "Maximum token entry price (0–1). Entries above this are skipped regardless of edge. "
+            "Maximum token entry price (0-1). Entries above this are skipped regardless of edge. "
             "At 0.90 entry: max profit is 10¢ but max loss is 90¢ — terrible risk/reward. "
             "Default 0.70 blocks entries where BSM model error risk outweighs reward."
         ),
