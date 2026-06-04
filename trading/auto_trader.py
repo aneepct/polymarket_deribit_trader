@@ -591,6 +591,26 @@ async def _monitor_position(st: AssetState) -> None:
     if extras_changed:
         st.extra_token_ids = extras
 
+    # ── Hard stop-loss for primary position ──────────────────────────────────
+    if pnl_pct <= cfg.stop_loss_pct:
+        best_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
+        sell_price = max(0.0001, min(0.9999, round((best_bid if best_bid else cur - 0.01), 4)))
+        logger.warning(
+            "%s STOP-LOSS hit (pnl=%.2f%% <= %.1f%%) — closing at %.4f (best_bid=%.4f)",
+            st.tag, pnl_pct, cfg.stop_loss_pct, sell_price, best_bid or 0,
+        )
+        try:
+            resp = await asyncio.to_thread(pm_create_order, st.active_token_id, sell_price, size, "SELL")
+        except Exception as exc:
+            logger.error("%s stop-loss close error: %s", st.tag, exc)
+            return
+        if not resp.get("success"):
+            logger.error("%s stop-loss close rejected: %s", st.tag, resp.get("errorMsg", resp))
+            return
+        logger.info("%s stop-loss close placed id=%s", st.tag, resp.get("orderID"))
+        st.active_sell_order_id = resp.get("orderID")
+        return
+
     # ── Profit target ────────────────────────────────────────────────────────
     if pnl_pct < cfg.profit_target_pct:
         return
