@@ -276,9 +276,16 @@ async def _scan_and_trade(st: AssetState) -> bool:
     size = round(cfg.order_usd / price, 2)
     size = max(cfg.min_shares, size)
 
+    interp_conf = best.get("interp_confidence") or "?"
+    dvol_val = best.get("dvol")
+    funding_val = best.get("funding_8h")
     logger.info(
-        "%s SCAN → BUY %s '%s'  price=%.4f  size=%.2f  edge=%.1f%%",
+        "%s SCAN → BUY %s '%s'  price=%.4f  size=%.2f  edge=%.1f%%  deribit=%.3f  interp=%s  dvol=%s  funding=%s",
         st.tag, outcome, question[:70], price, size, abs_edge,
+        float(best.get("deribit_prob") or 0),
+        interp_conf,
+        f"{dvol_val:.1f}" if dvol_val is not None else "n/a",
+        f"{funding_val:+.5f}" if funding_val is not None else "n/a",
     )
 
     try:
