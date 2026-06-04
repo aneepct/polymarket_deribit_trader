@@ -464,10 +464,14 @@ async def _monitor_position(st: AssetState) -> None:
         st.fill_time = datetime.now(timezone.utc).isoformat()
         st.active_order_id = None
 
-    pnl_pct = (cur - avg) / avg * 100.0
+    # Use live best bid for P&L — curPrice from positions API lags significantly.
+    # Fall back to curPrice only if best_bid fetch fails.
+    live_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
+    live_price = live_bid if (live_bid and live_bid > 0.01) else cur
+    pnl_pct = (live_price - avg) / avg * 100.0
     logger.info(
-        "%s MONITOR %s: avg=%.4f cur=%.4f size=%.2f pnl=%.2f%%",
-        st.tag, (st.active_token_id or "")[:20], avg, cur, size, pnl_pct,
+        "%s MONITOR %s: avg=%.4f cur=%.4f live_bid=%.4f size=%.2f pnl=%.2f%%",
+        st.tag, (st.active_token_id or "")[:20], avg, cur, live_bid or 0, size, pnl_pct,
     )
 
     # Cancel stale SELL and re-evaluate at current price
@@ -487,8 +491,7 @@ async def _monitor_position(st: AssetState) -> None:
             if end_dt.tzinfo is None:
                 end_dt = end_dt.replace(tzinfo=timezone.utc)
             if end_dt <= datetime.now(timezone.utc):
-                best_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
-                sell_price = max(0.0001, min(0.9999, round((best_bid if best_bid else cur - 0.01), 4)))
+                sell_price = max(0.0001, min(0.9999, round((live_bid if live_bid else cur - 0.01), 4)))
                 logger.warning(
                     "%s market expired — closing at %.4f (pnl=%.2f%%)", st.tag, sell_price, pnl_pct
                 )
@@ -509,10 +512,9 @@ async def _monitor_position(st: AssetState) -> None:
     # ── Signal-based exit (spec v1.1 + early-collapse rule 2026-05-25) ──────
     # Replaces the P&L stop-loss for the primary position. Exits when Deribit
     # conviction is gone, the edge has flipped, or early-collapse rule fires.
-    _exit_reason = _check_signal_exit(st, cur, cfg)
+    _exit_reason = _check_signal_exit(st, live_price, cfg)
     if _exit_reason:
-        best_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
-        sell_price = max(0.0001, min(0.9999, round((best_bid if best_bid else cur - 0.01), 4)))
+        sell_price = max(0.0001, min(0.9999, round((live_bid if live_bid else cur - 0.01), 4)))
         logger.warning(
             "%s signal-exit triggered (%s) pnl=%.2f%% — closing at %.4f",
             st.tag, _exit_reason, pnl_pct, sell_price,
@@ -593,11 +595,10 @@ async def _monitor_position(st: AssetState) -> None:
 
     # ── Hard stop-loss for primary position ──────────────────────────────────
     if pnl_pct <= cfg.stop_loss_pct:
-        best_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
-        sell_price = max(0.0001, min(0.9999, round((best_bid if best_bid else cur - 0.01), 4)))
+        sell_price = max(0.0001, min(0.9999, round((live_bid if live_bid else cur - 0.01), 4)))
         logger.warning(
-            "%s STOP-LOSS hit (pnl=%.2f%% <= %.1f%%) — closing at %.4f (best_bid=%.4f)",
-            st.tag, pnl_pct, cfg.stop_loss_pct, sell_price, best_bid or 0,
+            "%s STOP-LOSS hit (pnl=%.2f%% <= %.1f%%) — closing at %.4f (live_bid=%.4f)",
+            st.tag, pnl_pct, cfg.stop_loss_pct, sell_price, live_bid or 0,
         )
         try:
             resp = await asyncio.to_thread(pm_create_order, st.active_token_id, sell_price, size, "SELL")
@@ -615,9 +616,8 @@ async def _monitor_position(st: AssetState) -> None:
     if pnl_pct < cfg.profit_target_pct:
         return
 
-    best_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
-    sell_price = max(0.0001, min(0.9999, round((best_bid if best_bid else cur - 0.01), 4)))
-    logger.info("%s %.1f%% profit — closing at %.4f (best_bid=%.4f)", st.tag, pnl_pct, sell_price, best_bid or 0)
+    sell_price = max(0.0001, min(0.9999, round((live_bid if live_bid else cur - 0.01), 4)))
+    logger.info("%s %.1f%% profit — closing at %.4f (live_bid=%.4f)", st.tag, pnl_pct, sell_price, live_bid or 0)
 
     try:
         resp = await asyncio.to_thread(pm_create_order, st.active_token_id, sell_price, size, "SELL")
