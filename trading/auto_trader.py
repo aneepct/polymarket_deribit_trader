@@ -275,6 +275,13 @@ async def _scan_and_trade(st: AssetState) -> bool:
         logger.warning("%s invalid price %.4f for %r; skipping", st.tag, price, market_id)
         return False
 
+    if price > cfg.max_poly_entry_price:
+        logger.info(
+            "%s entry price %.4f > max_poly_entry_price=%.2f for '%s' %s — skipping (poor risk/reward)",
+            st.tag, price, cfg.max_poly_entry_price, question[:50], outcome_target,
+        )
+        return False
+
     size = round(cfg.order_usd / price, 2)
     size = max(cfg.min_shares, size)
 
