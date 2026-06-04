@@ -84,7 +84,7 @@ async def _fetch_instruments(currency: str) -> list[str]:
 
 
 def _build_channels(instruments: list[str]) -> list[str]:
-    channels = [f"ticker.{i}.raw" for i in instruments]
+    channels = [f"ticker.{i}.100ms" for i in instruments]
     # Add index channels for each currency found in the instrument list
     currencies_seen: set[str] = set()
     for i in instruments:
