@@ -72,12 +72,12 @@ class TradingConfig(SingletonModel):
         help_text="Seconds between scan / monitor cycles",
     )
     deribit_neutral_low = models.FloatField(
-        default=0.49,
-        help_text="Lower bound of Deribit neutral band (skip if prob is in this range)",
+        default=0.42,
+        help_text="Lower bound of Deribit neutral band — skip entry if deribit_prob is above this (e.g. 0.42 means Deribit must be ≤42% for NO trade)",
     )
     deribit_neutral_high = models.FloatField(
-        default=0.51,
-        help_text="Upper bound of Deribit neutral band",
+        default=0.58,
+        help_text="Upper bound of Deribit neutral band — skip entry if deribit_prob is below this (e.g. 0.58 means Deribit must be ≥58% for YES trade)",
     )
     today_lookahead_hours = models.FloatField(
         default=6.0,
