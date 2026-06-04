@@ -362,9 +362,10 @@ def _check_signal_exit(st: AssetState, current_pm_price: float, cfg) -> Optional
 
     current_edge = current_fair - current_pm_price
 
-    # Rule 7c: edge sign flipped.
-    if (entry_edge > 0 and current_edge < 0) or (entry_edge < 0 and current_edge > 0):
-        return f"edge_sign_flip_entry_{entry_edge:.3f}_now_{current_edge:.3f}"
+    # Rule 7c: edge sign flipped — DISABLED: fires too early on normal price noise.
+    # if (entry_edge > 0 and current_edge < 0) or (entry_edge < 0 and current_edge > 0):
+    #     return f"edge_sign_flip_entry_{entry_edge:.3f}_now_{current_edge:.3f}"
+    logger.debug("%s 7c disabled — entry_edge=%.3f current_edge=%.3f", st.tag, entry_edge, current_edge)
 
     # Rule 7d: early-collapse DISABLED — 1pp threshold triggers on normal IV noise.
     # Kept here for reference; re-enable by uncommenting when data pipeline is stable.
