@@ -392,6 +392,7 @@ async def _monitor_position(st: AssetState) -> None:
         fetch_positions as pm_fetch_positions,
         create_order as pm_create_order,
         cancel_order as pm_cancel_order,
+        fetch_best_bid as pm_fetch_best_bid,
     )
     cfg = await _acfg()
 
@@ -478,7 +479,8 @@ async def _monitor_position(st: AssetState) -> None:
             if end_dt.tzinfo is None:
                 end_dt = end_dt.replace(tzinfo=timezone.utc)
             if end_dt <= datetime.now(timezone.utc):
-                sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
+                best_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
+                sell_price = max(0.0001, min(0.9999, round((best_bid if best_bid else cur - 0.01), 4)))
                 logger.warning(
                     "%s market expired — closing at %.4f (pnl=%.2f%%)", st.tag, sell_price, pnl_pct
                 )
@@ -501,7 +503,8 @@ async def _monitor_position(st: AssetState) -> None:
     # conviction is gone, the edge has flipped, or early-collapse rule fires.
     _exit_reason = _check_signal_exit(st, cur, cfg)
     if _exit_reason:
-        sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
+        best_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
+        sell_price = max(0.0001, min(0.9999, round((best_bid if best_bid else cur - 0.01), 4)))
         logger.warning(
             "%s signal-exit triggered (%s) pnl=%.2f%% — closing at %.4f",
             st.tag, _exit_reason, pnl_pct, sell_price,
@@ -565,7 +568,8 @@ async def _monitor_position(st: AssetState) -> None:
             reason = f"profit {e_pnl_pct:.1f}%"
 
         if should_close:
-            sell_price = max(0.0001, min(0.9999, round(e_cur - 0.01, 4)))
+            best_bid_extra = await asyncio.to_thread(pm_fetch_best_bid, extra_token_id)
+            sell_price = max(0.0001, min(0.9999, round((best_bid_extra if best_bid_extra else e_cur - 0.01), 4)))
             logger.info("%s closing extra %s (%s) at %.4f", st.tag, extra_token_id[:20], reason, sell_price)
             try:
                 resp = await asyncio.to_thread(pm_create_order, extra_token_id, sell_price, e_size, "SELL")
@@ -583,8 +587,9 @@ async def _monitor_position(st: AssetState) -> None:
     if pnl_pct < cfg.profit_target_pct:
         return
 
-    sell_price = max(0.0001, min(0.9999, round(cur - 0.01, 4)))
-    logger.info("%s %.1f%% profit — closing at %.4f", st.tag, pnl_pct, sell_price)
+    best_bid = await asyncio.to_thread(pm_fetch_best_bid, st.active_token_id)
+    sell_price = max(0.0001, min(0.9999, round((best_bid if best_bid else cur - 0.01), 4)))
+    logger.info("%s %.1f%% profit — closing at %.4f (best_bid=%.4f)", st.tag, pnl_pct, sell_price, best_bid or 0)
 
     try:
         resp = await asyncio.to_thread(pm_create_order, st.active_token_id, sell_price, size, "SELL")

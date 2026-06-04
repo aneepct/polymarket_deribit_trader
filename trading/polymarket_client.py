@@ -117,6 +117,32 @@ def create_order(token_id: str, price: float, size: float, side: str) -> dict:
 # Cancel order
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Orderbook best bid
+# ---------------------------------------------------------------------------
+
+def fetch_best_bid(token_id: str) -> float | None:
+    """Return the highest bid price for *token_id*, or None on failure."""
+    cfg, _ = _get_config()
+    try:
+        r = httpx.get(
+            f"{cfg.polymarket_clob_api}/book",
+            params={"token_id": token_id},
+            timeout=cfg.http_timeout_s,
+        )
+        r.raise_for_status()
+        bids = r.json().get("bids", [])
+        if bids:
+            return float(bids[0]["price"])
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Cancel order
+# ---------------------------------------------------------------------------
+
 def cancel_order(order_id: str) -> dict:
     cfg, _ = _get_config()
     client = _get_client()
