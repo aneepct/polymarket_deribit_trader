@@ -122,7 +122,12 @@ def create_order(token_id: str, price: float, size: float, side: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def fetch_best_bid(token_id: str) -> float | None:
-    """Return the highest bid price for *token_id*, or None on failure."""
+    """Return the highest bid price for *token_id*, or None on failure.
+
+    The Polymarket /book endpoint returns bids sorted ascending (lowest first),
+    so we take the last element. We also validate the result is at least 10% of
+    the mid price to guard against stale/empty orderbook responses.
+    """
     cfg, _ = _get_config()
     try:
         r = httpx.get(
@@ -133,7 +138,12 @@ def fetch_best_bid(token_id: str) -> float | None:
         r.raise_for_status()
         bids = r.json().get("bids", [])
         if bids:
-            return float(bids[0]["price"])
+            # Sort descending by price to be safe (ascending is default on Polymarket)
+            bids_sorted = sorted(bids, key=lambda b: float(b.get("price", 0)), reverse=True)
+            best = float(bids_sorted[0]["price"])
+            # Sanity check: reject if < 0.05 (likely empty book floor, not a real bid)
+            if best >= 0.05:
+                return best
     except Exception:
         pass
     return None
