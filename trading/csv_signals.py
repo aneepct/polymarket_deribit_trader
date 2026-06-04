@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 STRIKE_TOLERANCE_PCT = 5.0
 DERIBIT_DEPTH = 1
 MIN_EDGE_PCT = 3.0
+MIN_OI_FILTER = 0           # set > 0 to require open interest on matched instrument
+DVOL_MAX = 120.0            # skip signals if DVOL > this (IV too unstable for BSM)
+FUNDING_STRONG_THRESHOLD = 0.0003  # 0.03%/hr — above this, crowd is strongly directional
 
 # ── In-memory signal store ────────────────────────────────────────────────────
 _latest_signals: list[dict[str, Any]] = []
@@ -343,11 +346,21 @@ def _compute_for_currency(
     poly_rows: list[dict[str, Any]],
     deribit_today_rows: list[dict[str, Any]],
     deribit_tomorrow_rows: list[dict[str, Any]],
+    dvol: Optional[float] = None,
+    funding_8h: Optional[float] = None,
 ) -> tuple[list[dict[str, Any]], int]:
     der_today = deribit_today_rows
     der_tomorrow = deribit_tomorrow_rows
 
     if not poly_rows or (not der_today and not der_tomorrow):
+        return [], len(poly_rows)
+
+    # ── DVOL filter: skip if IV is too unstable for BSM to be reliable ────────
+    if dvol is not None and dvol > DVOL_MAX:
+        logger.info(
+            "[csv_signals] %s DVOL=%.1f > %.1f — skipping signal computation (IV unstable)",
+            currency, dvol, DVOL_MAX,
+        )
         return [], len(poly_rows)
 
     der_today_by_opt: dict[str, list[dict[str, Any]]] = {"C": [], "P": []}
@@ -419,6 +432,14 @@ def _compute_for_currency(
         if not der1 and not der2:
             continue
 
+        # ── OI filter: skip if matched instrument has zero open interest ──────
+        if MIN_OI_FILTER > 0:
+            oi1 = _to_float((der1 or {}).get("open_interest")) if der1 else None
+            oi2 = _to_float((der2 or {}).get("open_interest")) if der2 else None
+            best_oi = max(v for v in (oi1, oi2) if v is not None) if (oi1 is not None or oi2 is not None) else None
+            if best_oi is not None and best_oi < MIN_OI_FILTER:
+                continue  # model quote only — no real IV traded here
+
         spot_price = _to_float((der1 or der2 or {}).get("index_price"))
         spot = spot_price or 0.0
 
@@ -472,6 +493,19 @@ def _compute_for_currency(
             prob_high = _bsm_prob_from_row(der1_high, der2_high, strike_high_parsed)
             if prob_high is None:
                 prob_high = 1.0 if (spot > 0 and strike_high_parsed < spot) else 0.0
+
+            # IV skew: for the lower strike of a range, also try put IV which
+            # captures put-skew (OTM puts are more expensive, reflecting downside fear).
+            # Use put-based prob_low if available and the lower strike is below spot.
+            if spot > 0 and strike < spot:
+                der1_put = _find_closest_in_strike(der_today_by_opt["P"], strike=strike, strike_tol_pct=STRIKE_TOLERANCE_PCT)
+                der2_put = _find_closest_in_strike(der_tom_by_opt["P"], strike=strike, strike_tol_pct=STRIKE_TOLERANCE_PCT)
+                if der1_put or der2_put:
+                    prob_low_put = _bsm_prob_from_row(der1_put, der2_put, strike)
+                    if prob_low_put is not None:
+                        # Average call and put BSM probs (put-call parity weighted blend)
+                        prob_low = round((float(prob_low) + float(prob_low_put)) / 2.0, 4)
+
             deribit_prob = _clamp01(float(prob_low) - float(prob_high))
         elif is_lt:
             deribit_prob = _clamp01(1.0 - float(prob_low))
@@ -537,6 +571,11 @@ def _compute_for_currency(
                 "scanned_at": datetime.utcnow().isoformat(),
                 "data_source": "csv_deribit_poly",
                 "currency": currency,
+                # ── Extra context fields (for logging/analysis) ────────────
+                "dvol": round(dvol, 2) if dvol is not None else None,
+                "funding_8h": round(funding_8h, 6) if funding_8h is not None else None,
+                "open_interest_t1": _to_float((der1 or {}).get("open_interest")) if der1 else None,
+                "open_interest_t2": _to_float((der2 or {}).get("open_interest")) if der2 else None,
             }
         )
 
@@ -567,6 +606,33 @@ async def refresh_latest_signals() -> None:
     try:
         btc_today, btc_tomorrow = await _load_deribit_from_redis(r, "BTC")
         eth_today, eth_tomorrow = await _load_deribit_from_redis(r, "ETH")
+
+        # ── DVOL + funding from Redis (written by deribit_ws_loop) ────────────
+        async def _read_float(key: str) -> Optional[float]:
+            v = await r.get(key)
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        async def _read_funding(key: str) -> Optional[float]:
+            v = await r.get(key)
+            if not v:
+                return None
+            try:
+                return float(json.loads(v).get("funding_8h") or 0)
+            except Exception:
+                return None
+
+        btc_dvol     = await _read_float("deribit:dvol:btc_usd")
+        eth_dvol     = await _read_float("deribit:dvol:eth_usd")
+        btc_funding  = await _read_funding("deribit:perp:BTC")
+        eth_funding  = await _read_funding("deribit:perp:ETH")
+
+        if btc_dvol is not None:
+            logger.info("[csv_signals] BTC DVOL=%.1f  funding_8h=%.5f", btc_dvol, btc_funding or 0)
+        if eth_dvol is not None:
+            logger.info("[csv_signals] ETH DVOL=%.1f  funding_8h=%.5f", eth_dvol, eth_funding or 0)
     finally:
         await r.aclose()
 
@@ -596,12 +662,16 @@ async def refresh_latest_signals() -> None:
         poly_rows=btc_poly_rows,
         deribit_today_rows=btc_today,
         deribit_tomorrow_rows=btc_tomorrow,
+        dvol=btc_dvol,
+        funding_8h=btc_funding,
     )
     eth_candidates, _ = _compute_for_currency(
         currency="ETH",
         poly_rows=eth_poly_rows,
         deribit_today_rows=eth_today,
         deribit_tomorrow_rows=eth_tomorrow,
+        dvol=eth_dvol,
+        funding_8h=eth_funding,
     )
 
     candidates = btc_candidates + eth_candidates

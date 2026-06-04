@@ -85,12 +85,14 @@ async def _fetch_instruments(currency: str) -> list[str]:
 
 def _build_channels(instruments: list[str]) -> list[str]:
     channels = [f"ticker.{i}.100ms" for i in instruments]
-    # Add index channels for each currency found in the instrument list
+    # Add index, DVOL, and perpetual funding channels per currency
     currencies_seen: set[str] = set()
     for i in instruments:
         currencies_seen.add(i.split("-")[0].lower())
     for cur in currencies_seen:
         channels.append(f"deribit_price_index.{cur}_usd")
+        channels.append(f"deribit_volatility_index.{cur}_usd")        # DVOL
+        channels.append(f"ticker.{cur.upper()}-PERPETUAL.100ms")       # perp funding
     return channels
 
 
@@ -183,18 +185,32 @@ async def _ws_session(redis_client: Any, currencies: list[str]) -> None:
                     if not instrument_name:
                         continue
                     greeks: dict = data.get("greeks") or {}
+
+                    # Perpetual contract — store funding rate separately
+                    if instrument_name.endswith("-PERPETUAL"):
+                        currency = instrument_name.split("-")[0]  # BTC or ETH
+                        funding = data.get("current_funding") or data.get("funding_8h")
+                        if funding is not None:
+                            await redis_client.set(
+                                f"deribit:perp:{currency}",
+                                json.dumps({"funding_8h": float(funding), "timestamp": data.get("timestamp")}),
+                                ex=TICKER_TTL,
+                            )
+                        continue
+
                     row: dict[str, Any] = {
                         "instrument_name": instrument_name,
-                        "mark_iv":        data.get("mark_iv"),
-                        "delta":          greeks.get("delta") or data.get("delta"),
-                        "gamma":          greeks.get("gamma"),
-                        "vega":           greeks.get("vega"),
-                        "theta":          greeks.get("theta"),
-                        "best_bid_price": data.get("best_bid_price"),
-                        "best_ask_price": data.get("best_ask_price"),
-                        "mark_price":     data.get("mark_price"),
-                        "index_price":    data.get("index_price") or data.get("underlying_price"),
-                        "timestamp":      data.get("timestamp"),
+                        "mark_iv":         data.get("mark_iv"),
+                        "delta":           greeks.get("delta") or data.get("delta"),
+                        "gamma":           greeks.get("gamma"),
+                        "vega":            greeks.get("vega"),
+                        "theta":           greeks.get("theta"),
+                        "best_bid_price":  data.get("best_bid_price"),
+                        "best_ask_price":  data.get("best_ask_price"),
+                        "mark_price":      data.get("mark_price"),
+                        "index_price":     data.get("index_price") or data.get("underlying_price"),
+                        "open_interest":   data.get("open_interest"),   # OI filter
+                        "timestamp":       data.get("timestamp"),
                     }
                     # Parse fields from instrument name: BTC-27DEC24-100000-C
                     parts = instrument_name.split("-")
@@ -211,6 +227,16 @@ async def _ws_session(redis_client: Any, currencies: list[str]) -> None:
                         json.dumps(row),
                         ex=TICKER_TTL,
                     )
+
+                elif channel.startswith("deribit_volatility_index."):
+                    index_name = data.get("index_name", "")  # e.g. btc_usd
+                    dvol = data.get("volatility")
+                    if index_name and dvol is not None:
+                        await redis_client.set(
+                            f"deribit:dvol:{index_name}",
+                            str(dvol),
+                            ex=TICKER_TTL,
+                        )
 
                 elif channel.startswith("deribit_price_index."):
                     index_name = data.get("index_name", "")
