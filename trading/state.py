@@ -181,7 +181,7 @@ class AssetState:
             "active_market_id": None,
             "entry_edge": None,
             "fill_time": None,
-            "blocked_markets": {},
+            "blocked_markets": self.blocked_markets,
         }, timeout=_ttl())
 
     def close_and_promote(self) -> None:
@@ -198,6 +198,7 @@ class AssetState:
                 "active_market_id": None,
                 "entry_edge": None,
                 "fill_time": None,
+                "blocked_markets": self.blocked_markets,
             }, timeout=_ttl())
         else:
             self.reset()
