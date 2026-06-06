@@ -19,7 +19,6 @@ Start with:
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import logging
 import pathlib
@@ -28,16 +27,9 @@ from typing import Any, Optional
 
 from django.core.cache import cache
 
-logger = logging.getLogger(__name__)
+from trading.algo_math import evaluate_exit, MIN_EDGE, MIN_FAIR_PROB
 
-# ── Load evaluate_exit from algorithms_2026-05-28.py ─────────────────────────
-_ALGO_PATH = pathlib.Path(__file__).parent.parent / "algorithms_2026-05-28.py"
-_spec = importlib.util.spec_from_file_location("_algo_paper", _ALGO_PATH)
-_algo = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_algo)
-evaluate_exit = _algo.evaluate_exit
-MIN_EDGE      = _algo.MIN_EDGE
-MIN_FAIR_PROB = _algo.MIN_FAIR_PROB
+logger = logging.getLogger(__name__)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────

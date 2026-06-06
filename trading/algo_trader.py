@@ -20,25 +20,17 @@ State machine (per asset):
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import logging
-import pathlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
 
 from trading.algo_state import AlgoAssetState
+from trading.algo_math import evaluate_exit, MIN_EDGE, MIN_FAIR_PROB
 
 logger = logging.getLogger(__name__)
-
-# ── Load evaluate_exit from algorithms_2026-05-28.py ─────────────────────────
-_ALGO_PATH = pathlib.Path(__file__).parent.parent / "algorithms_2026-05-28.py"
-_spec = importlib.util.spec_from_file_location("_algo_math_trader", _ALGO_PATH)
-_algo = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_algo)
-evaluate_exit = _algo.evaluate_exit
 
 
 # ── Config helper ─────────────────────────────────────────────────────────────
@@ -229,8 +221,8 @@ async def _scan_and_trade(st: AlgoAssetState) -> bool:
 
     # Determine side: pick the one with higher qualifying edge
     fair = deribit_prob
-    can_yes = edge_yes >= _algo.MIN_EDGE and fair >= _algo.MIN_FAIR_PROB
-    can_no  = edge_no  >= _algo.MIN_EDGE and (1.0 - fair) >= _algo.MIN_FAIR_PROB
+    can_yes = edge_yes >= MIN_EDGE and fair >= MIN_FAIR_PROB
+    can_no  = edge_no  >= MIN_EDGE and (1.0 - fair) >= MIN_FAIR_PROB
 
     if can_yes and can_no:
         outcome_target = "YES" if edge_yes >= edge_no else "NO"

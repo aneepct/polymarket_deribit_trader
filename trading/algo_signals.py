@@ -19,35 +19,28 @@ algo_trader.py can share downstream logic unchanged.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
-import pathlib
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
 
+from trading.algo_math import (
+    call_deltas,
+    chain_expiry_hours,
+    compute_fair,
+    calendar_weights,
+    interp_delta,
+    rescale_delta,
+    parse_band,
+    next_deribit_expiry_utc,
+    MIN_EDGE,
+    MIN_FAIR_PROB,
+)
+
 logger = logging.getLogger(__name__)
-
-# ── Load math functions from algorithms_2026-05-28.py ────────────────────────
-_ALGO_PATH = pathlib.Path(__file__).parent.parent / "algorithms_2026-05-28.py"
-_spec = importlib.util.spec_from_file_location("_algo_math", _ALGO_PATH)
-_algo = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_algo)
-
-call_deltas         = _algo.call_deltas
-chain_expiry_hours  = _algo.chain_expiry_hours
-compute_fair        = _algo.compute_fair
-calendar_weights    = _algo.calendar_weights
-interp_delta        = _algo.interp_delta
-rescale_delta       = _algo.rescale_delta
-parse_band          = _algo.parse_band
-next_deribit_expiry_utc = _algo.next_deribit_expiry_utc
-
-MIN_EDGE      = _algo.MIN_EDGE       # 0.05
-MIN_FAIR_PROB = _algo.MIN_FAIR_PROB  # 0.51
 
 DVOL_MAX = 120.0   # mirror csv_signals constant
 
